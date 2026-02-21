@@ -9,7 +9,10 @@ import torch
 from tqdm.auto import tqdm
 
 from .single_maxsim import single_maxsim
-from .model import MLP
+from .model import (
+    ELM,
+    MLP,
+)
 
 
 class Lemur:
@@ -175,13 +178,33 @@ class Lemur:
         learn_subset_size: int = 100000,
         grad_clip: Optional[float] = None,
         verbose: bool = True,
-    ) -> MLP:
+    ) -> torch.nn.Module:
+        device = self.device
+        if epochs < 0:
+            raise ValueError("epochs must be >= 0")
+        if final_hidden_dim is None:
+            final_hidden_dim = hidden_dim
+        if epochs == 0:
+            model = ELM(
+                input_dim=self.learn.shape[1],
+                output_dim=1,
+                final_hidden_dim=final_hidden_dim,
+                activation=activation,
+            ).to(device)
+            model.config["model_type"] = "elm"
+            self.final_hidden_dim = int(model.config["final_hidden_dim"])
+            self.mlp = model
+            if self.index_path is not None:
+                self.index_path.mkdir(parents=True, exist_ok=True)
+                self.save_mlp()
+            if verbose:
+                print(f"Using random {activation.upper()} features; " "skipping model training.")
+            return model
+
         X_train, y_train, X_val, y_val = self.create_training_data(
             train_subset_size=train_subset_size,
             learn_subset_size=learn_subset_size,
         )
-
-        device = self.device
         X_train = X_train.to(device)
         y_train = y_train.to(device)
         if X_val is not None:
@@ -285,7 +308,9 @@ class Lemur:
         model = self.mlp
         config = getattr(model, "config", None)
         if config is None:
-            raise ValueError("mlp config is missing; re-create the model with a config-aware MLP")
+            raise ValueError(
+                "model config is missing; re-create the model with a config-aware module"
+            )
 
         payload = {"state_dict": model.state_dict(), "config": config}
         if hasattr(self, "mean") and hasattr(self, "std"):
@@ -297,7 +322,7 @@ class Lemur:
     def load_mlp(
         self,
         path: Optional[Union[str, Path]] = None,
-    ) -> MLP:
+    ) -> torch.nn.Module:
         if path is None:
             if self.index_path is None:
                 raise ValueError("path is required when index_path is not set")
@@ -306,24 +331,22 @@ class Lemur:
             path = Path(path)
 
         payload = torch.load(path, map_location=self.device)
-        if not isinstance(payload, dict) or "state_dict" not in payload or "config" not in payload:
-            raise ValueError("mlp checkpoint must contain state_dict and config")
-
         config = dict(payload["config"])
-        config.pop("normalize", None)
-        config.pop("eps", None)
-        config.pop("dropout", None)
-        model = MLP(**config).to(self.device)
-        self.final_hidden_dim = int(config["final_hidden_dim"])
-        state = payload["state_dict"]
-        model.load_state_dict(state)
+        model_type = config.pop("model_type")
+        builders = {
+            "mlp": MLP,
+            "elm": ELM,
+        }
+        model = builders[model_type](**config).to(self.device)
+        model.config["model_type"] = model_type
+        self.final_hidden_dim = int(model.config["final_hidden_dim"])
+
+        model.load_state_dict(payload["state_dict"])
         self.mlp = model
-        if "output_mean" in payload and "output_std" in payload:
-            self.mean = torch.tensor(payload["output_mean"], device=self.device)
-            self.std = torch.tensor(payload["output_std"], device=self.device)
-        else:
-            self.mean = torch.tensor(0.0, device=self.device)
-            self.std = torch.tensor(1.0, device=self.device)
+
+        self.mean = torch.tensor(payload["output_mean"], device=self.device)
+        self.std = torch.tensor(payload["output_std"], device=self.device)
+
         return model
 
     def save_w(self, path: Optional[Union[str, Path]] = None) -> Path:
