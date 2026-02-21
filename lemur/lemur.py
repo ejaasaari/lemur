@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional, Union
 
 import numpy as np
 import torch
+from tqdm.auto import tqdm
 
 from .single_maxsim import single_maxsim
 from .model import MLP
@@ -422,34 +424,37 @@ class Lemur:
             max_segments = 1
 
         use_non_blocking = device.type == "cuda"
-        last_pct = -1
         with torch.inference_mode():
             U, S, Vh = torch.linalg.svd(Z, full_matrices=False)
             tol = torch.finfo(S.dtype).eps * max(Z.shape) * S.max()
-            S_inv = torch.where(S > tol, S.reciprocal(), torch.zeros_like(S))
+            scales = torch.where(S > tol, S.reciprocal(), torch.zeros_like(S))
             U_t = U.T
             Vh_t = Vh.T
 
-            for seg_start in range(0, num_segments, max_segments):
-                seg_end = min(seg_start + max_segments, num_segments)
-                if verbose:
-                    pct = int((seg_end * 100) / max(1, num_segments))
-                    if pct > last_pct:
-                        for step in range(last_pct + 1, pct + 1):
-                            print(f"Indexing documents... {step}%")
-                        last_pct = pct
-                row_start = train_offsets[seg_start]
-                row_end = train_offsets[seg_end]
+            progress = (
+                tqdm(total=num_segments, desc="Indexing documents", unit="doc")
+                if verbose
+                else nullcontext(None)
+            )
+            with progress as pbar:
+                for seg_start in range(0, num_segments, max_segments):
+                    seg_end = min(seg_start + max_segments, num_segments)
+                    row_start = train_offsets[seg_start]
+                    row_end = train_offsets[seg_end]
 
-                train_slice = train_tensor[row_start:row_end]
-                if device.type != "cpu":
-                    train_slice = train_slice.to(device, non_blocking=use_non_blocking)
-                counts_slice = counts_tensor[seg_start:seg_end]
-                Y_batch = (single_maxsim(train_slice, counts_slice, sampled) - self.mean) / self.std
+                    train_slice = train_tensor[row_start:row_end]
+                    if device.type != "cpu":
+                        train_slice = train_slice.to(device, non_blocking=use_non_blocking)
+                    counts_slice = counts_tensor[seg_start:seg_end]
+                    Y_batch = (
+                        single_maxsim(train_slice, counts_slice, sampled) - self.mean
+                    ) / self.std
 
-                UtY = U_t @ Y_batch
-                scaled = S_inv[:, None] * UtY
-                W[seg_start:seg_end] = (Vh_t @ scaled).T.to(W.dtype)
+                    UtY = U_t @ Y_batch
+                    scaled = scales[:, None] * UtY
+                    W[seg_start:seg_end] = (Vh_t @ scaled).T.to(W.dtype)
+                    if pbar is not None:
+                        pbar.update(seg_end - seg_start)
 
         self.W = W
         if self.index_path is not None:
