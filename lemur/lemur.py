@@ -184,10 +184,14 @@ class Lemur:
             raise ValueError("epochs must be >= 0")
         if final_hidden_dim is None:
             final_hidden_dim = hidden_dim
+        X_train, y_train, X_val, y_val = self.create_training_data(
+            train_subset_size=train_subset_size,
+            learn_subset_size=learn_subset_size,
+        )
         if epochs == 0:
             model = ELM(
-                input_dim=self.learn.shape[1],
-                output_dim=1,
+                input_dim=X_train.shape[1],
+                output_dim=y_train.shape[1],
                 final_hidden_dim=final_hidden_dim,
                 activation=activation,
             ).to(device)
@@ -201,10 +205,6 @@ class Lemur:
                 print(f"Using random {activation.upper()} features; " "skipping model training.")
             return model
 
-        X_train, y_train, X_val, y_val = self.create_training_data(
-            train_subset_size=train_subset_size,
-            learn_subset_size=learn_subset_size,
-        )
         X_train = X_train.to(device)
         y_train = y_train.to(device)
         if X_val is not None:
