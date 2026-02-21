@@ -196,11 +196,7 @@ class Lemur:
             num_layers=num_layers,
             activation=activation,
         ).to(device)
-        if device.type == "cuda":
-            model = torch.compile(model)
-
-        state_model = model._orig_mod if hasattr(model, "_orig_mod") else model
-        self.final_hidden_dim = int(state_model.config["final_hidden_dim"])
+        self.final_hidden_dim = int(model.config["final_hidden_dim"])
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         loss_fn = torch.nn.MSELoss()
         use_amp = device.type == "cuda"
@@ -266,12 +262,10 @@ class Lemur:
 
             if metric_loss < best_loss:
                 best_loss = metric_loss
-                best_state = {
-                    k: v.detach().cpu().clone() for k, v in state_model.state_dict().items()
-                }
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
         if best_state is not None:
-            state_model.load_state_dict(best_state)
+            model.load_state_dict(best_state)
 
         self.mlp = model
         if self.index_path is not None:
@@ -288,7 +282,7 @@ class Lemur:
         else:
             path = Path(path)
 
-        model = self.mlp._orig_mod if hasattr(self.mlp, "_orig_mod") else self.mlp
+        model = self.mlp
         config = getattr(model, "config", None)
         if config is None:
             raise ValueError("mlp config is missing; re-create the model with a config-aware MLP")
@@ -322,11 +316,7 @@ class Lemur:
         model = MLP(**config).to(self.device)
         self.final_hidden_dim = int(config["final_hidden_dim"])
         state = payload["state_dict"]
-        if any(key.startswith("_orig_mod.") for key in state.keys()):
-            state = {key.replace("_orig_mod.", "", 1): value for key, value in state.items()}
         model.load_state_dict(state)
-        if hasattr(torch, "compile") and self.device.type == "cuda":
-            model = torch.compile(model)
         self.mlp = model
         if "output_mean" in payload and "output_std" in payload:
             self.mean = torch.tensor(payload["output_mean"], device=self.device)
