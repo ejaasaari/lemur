@@ -117,10 +117,14 @@ class ELM(nn.Module):
             "final_hidden_dim": final_hidden_dim,
             "activation": activation,
         }
-        self.feature_extractor = RandomActivationFeatures(
+        random_features = RandomActivationFeatures(
             input_dim=input_dim,
             output_dim=final_hidden_dim,
             activation=activation,
+        )
+        self.feature_extractor = nn.Sequential(
+            random_features,
+            nn.LayerNorm(final_hidden_dim, elementwise_affine=False),
         )
         self.output_layer = nn.Linear(final_hidden_dim, output_dim, bias=False)
 
