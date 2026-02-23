@@ -14,6 +14,8 @@ from .model import (
     MLP,
 )
 
+ArrayLike = np.ndarray | torch.Tensor
+
 
 class Lemur:
 
@@ -22,14 +24,27 @@ class Lemur:
         self.index_path = Path(index) if index is not None else None
         self.final_hidden_dim: Optional[int] = None
 
+    def _to_tensor(self, value, *, device=None, dtype=None):
+        if isinstance(value, np.ndarray):
+            tensor = torch.from_numpy(value)
+        elif torch.is_tensor(value):
+            tensor = value.detach()
+        else:
+            raise TypeError("input must be a numpy ndarray or torch tensor.")
+        if dtype is not None and tensor.dtype != dtype:
+            tensor = tensor.to(dtype)
+        if device is not None and tensor.device != device:
+            tensor = tensor.to(device)
+        return tensor
+
     def fit(
         self,
-        train: np.ndarray,
-        train_counts: np.ndarray,
-        learn: Optional[np.ndarray] = None,
-        learn_counts: Optional[np.ndarray] = None,
-        test: Optional[np.ndarray] = None,
-        test_counts: Optional[np.ndarray] = None,
+        train: ArrayLike,
+        train_counts: ArrayLike,
+        learn: Optional[ArrayLike] = None,
+        learn_counts: Optional[ArrayLike] = None,
+        test: Optional[ArrayLike] = None,
+        test_counts: Optional[ArrayLike] = None,
         train_subset_size: int = 8192,
         learn_subset_size: int = 100000,
         ols_sample_size: int = 16384,
@@ -44,30 +59,32 @@ class Lemur:
         force_retrain: bool = False,
         verbose: bool = True,
     ) -> "Lemur":
-
         def validate_pair(
-            name: str, matrix: Optional[np.ndarray], counts: Optional[np.ndarray]
-        ) -> None:
+            name: str, matrix: Optional[ArrayLike], counts: Optional[ArrayLike]
+        ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
             if (matrix is None) != (counts is None):
                 raise ValueError(f"{name} and {name}_counts must be provided together.")
             if matrix is None:
-                return
+                return None, None
+            matrix = self._to_tensor(matrix, device=torch.device("cpu"))
+            counts = self._to_tensor(counts, device=torch.device("cpu"))
             if matrix.ndim != 2:
-                raise ValueError(f"{name} must be a 2D numpy array.")
-            if matrix.dtype != np.float32:
+                raise ValueError(f"{name} must be a 2D tensor.")
+            if matrix.dtype != torch.float32:
                 raise ValueError(f"{name} must have dtype float32.")
-            if counts is None or counts.ndim != 1:
-                raise ValueError(f"{name}_counts must be a 1D numpy array.")
-            if counts.dtype != np.int32:
+            if counts.ndim != 1:
+                raise ValueError(f"{name}_counts must be a 1D tensor.")
+            if counts.dtype != torch.int32:
                 raise ValueError(f"{name}_counts must have dtype int32.")
-            if np.any(counts < 0):
+            if torch.any(counts < 0):
                 raise ValueError(f"{name}_counts must be non-negative.")
-            if counts.sum(dtype=np.int64) != matrix.shape[0]:
+            if counts.sum(dtype=torch.int64).item() != matrix.shape[0]:
                 raise ValueError(f"sum({name}_counts) must equal the number of rows in {name}.")
+            return matrix, counts
 
-        validate_pair("train", train, train_counts)
-        validate_pair("test", test, test_counts)
-        validate_pair("learn", learn, learn_counts)
+        train, train_counts = validate_pair("train", train, train_counts)
+        test, test_counts = validate_pair("test", test, test_counts)
+        learn, learn_counts = validate_pair("learn", learn, learn_counts)
         if learn is None:
             learn = train
             learn_counts = train_counts
@@ -86,7 +103,7 @@ class Lemur:
                 cached_mlp = self.load_mlp(cached_path)
 
         if cached_mlp is None:
-            self.train_mlp(
+            self._train_mlp(
                 lr=lr,
                 epochs=epochs,
                 hidden_dim=hidden_dim,
@@ -107,46 +124,47 @@ class Lemur:
                 cached_w = self.load_w(cached_path)
 
         if cached_w is None:
-            self.fit_corpus(
+            self._fit_corpus(
                 sample_size=ols_sample_size,
                 verbose=verbose,
             )
 
+        self.mlp.to(self.device)
         return self
 
-    def create_training_data(
+    def _create_training_data(
         self,
         train_subset_size: int = 8192,
         learn_subset_size: int = 100000,
         block_bytes: int | None = 256 * 1024 * 1024,
     ):
-        train_offsets = np.concatenate([[0], np.cumsum(self.train_counts)])
+        num_train_docs = len(self.train_counts)
 
-        train_subset_ix = np.random.choice(
-            len(self.train_counts), size=train_subset_size, replace=False
+        train_offsets = torch.empty(num_train_docs + 1, dtype=torch.int64)
+        train_offsets[0] = 0
+        train_offsets[1:] = torch.cumsum(
+            self.train_counts.to(device="cpu", dtype=torch.int64), dim=0
         )
+
+        train_subset_ix = torch.randperm(num_train_docs)[:train_subset_size]
         if self.test is not None:
-            test_subset_ix = np.random.choice(
-                len(self.test), size=min(len(self.test), 32000), replace=False
-            )
+            test_subset_ix = torch.randperm(len(self.test))[: min(len(self.test), 32000)]
 
         def pick(i):
-            return self.train[train_offsets[i] : train_offsets[i + 1]]
+            start = int(train_offsets[i].item())
+            end = int(train_offsets[i + 1].item())
+            return self.train[start:end]
 
         device = self.device
 
-        tmp_train = torch.tensor(np.vstack([pick(i) for i in train_subset_ix])).to(device)
-        tmp_train_counts = torch.tensor(self.train_counts[train_subset_ix]).to(device)
+        tmp_train = torch.cat([pick(i) for i in train_subset_ix.tolist()], dim=0).to(device)
+        tmp_train_counts = self.train_counts[train_subset_ix].to(device)
 
-        learn_subset_ix = np.random.choice(
-            len(self.learn), size=min(len(self.learn), learn_subset_size), replace=False
-        )
+        learn_subset_ix = torch.randperm(len(self.learn))[: min(len(self.learn), learn_subset_size)]
         learn_vectors = self.learn[learn_subset_ix]
 
-        X_train = torch.tensor(learn_vectors).to(device)
-        X_val = (
-            torch.tensor(self.test[test_subset_ix]).to(device) if self.test is not None else None
-        )
+        X_train = learn_vectors.to(device)
+        X_val = self.test[test_subset_ix].to(device) if self.test is not None else None
 
         y_train = single_maxsim(tmp_train, tmp_train_counts, X_train, block_bytes=block_bytes)
         y_val = (
@@ -165,7 +183,7 @@ class Lemur:
 
         return X_train, y_train, X_val, y_val
 
-    def train_mlp(
+    def _train_mlp(
         self,
         epochs: int = 120,
         batch_size: int = 1024,
@@ -184,7 +202,7 @@ class Lemur:
             raise ValueError("epochs must be >= 0")
         if final_hidden_dim is None:
             final_hidden_dim = hidden_dim
-        X_train, y_train, X_val, y_val = self.create_training_data(
+        X_train, y_train, X_val, y_val = self._create_training_data(
             train_subset_size=train_subset_size,
             learn_subset_size=learn_subset_size,
         )
@@ -412,13 +430,13 @@ class Lemur:
                 outputs[start:end] = feature_extractor(data[start:end])
             return outputs
 
-    def fit_corpus(
+    def _fit_corpus(
         self,
         sample_size: int = 16384,
         verbose: bool = True,
     ):
-        sample_ix = np.random.choice(len(self.learn), size=sample_size, replace=False)
-        sampled = torch.from_numpy(self.learn[sample_ix])
+        sample_ix = torch.randperm(len(self.learn))[:sample_size]
+        sampled = self.learn[sample_ix]
         Z = self._compute_features_batched(sampled)
 
         device = Z.device
@@ -427,9 +445,11 @@ class Lemur:
         num_segments = len(self.train_counts)
         W = torch.empty((num_segments, Z.shape[1]), device=device, dtype=torch.float32)
 
-        train_tensor = torch.from_numpy(self.train)
-        counts_tensor = torch.from_numpy(self.train_counts)
-        train_offsets = np.concatenate([[0], np.cumsum(self.train_counts)])
+        train_offsets = torch.empty(len(self.train_counts) + 1, dtype=torch.int64)
+        train_offsets[0] = 0
+        train_offsets[1:] = torch.cumsum(
+            self.train_counts.to(device="cpu", dtype=torch.int64), dim=0
+        )
         bytes_per_score = sampled.element_size()
         target_bytes = 16 * 1024 * 1024
         max_segments = target_bytes // (sampled.shape[0] * bytes_per_score)
@@ -452,13 +472,13 @@ class Lemur:
             with progress as pbar:
                 for seg_start in range(0, num_segments, max_segments):
                     seg_end = min(seg_start + max_segments, num_segments)
-                    row_start = train_offsets[seg_start]
-                    row_end = train_offsets[seg_end]
+                    row_start = int(train_offsets[seg_start].item())
+                    row_end = int(train_offsets[seg_end].item())
 
-                    train_slice = train_tensor[row_start:row_end]
+                    train_slice = self.train[row_start:row_end]
                     if device.type != "cpu":
                         train_slice = train_slice.to(device, non_blocking=use_non_blocking)
-                    counts_slice = counts_tensor[seg_start:seg_end]
+                    counts_slice = self.train_counts[seg_start:seg_end]
                     Y_batch = (
                         single_maxsim(train_slice, counts_slice, sampled) - self.mean
                     ) / self.std
@@ -476,25 +496,29 @@ class Lemur:
         return self.W
 
     def compute_features(self, X):
+        device = self.device
+
         self.mlp.eval()
         with torch.inference_mode():
             if isinstance(X, tuple):
                 if len(X) != 2:
                     raise ValueError("X must be a tuple of (queries, queries_counts)")
                 queries, queries_counts = X
-                x_flat = torch.tensor(queries, dtype=torch.float32)
+                x_flat = self._to_tensor(queries, device=device, dtype=torch.float32)
                 feats = self.mlp.feature_extractor(x_flat)
+                counts_tensor = self._to_tensor(queries_counts)
+                if counts_tensor.ndim != 1:
+                    raise ValueError("queries_counts must be a 1D array or tensor")
+                counts_tensor = counts_tensor.to(device="cpu", dtype=torch.int64)
                 Q = torch.segment_reduce(
                     feats,
                     "sum",
-                    lengths=torch.from_numpy(queries_counts),
+                    lengths=counts_tensor,
                     axis=0,
                 )
                 return Q / 32
 
-            x = torch.from_numpy(X)
-            if x.dtype != torch.float32:
-                x = x.to(torch.float32)
+            x = self._to_tensor(X, device=device, dtype=torch.float32)
             B, N, D = x.shape
             feats = self.mlp.feature_extractor(x.flatten(0, 1))
             Q = feats.view(B, N, -1).mean(dim=1)
