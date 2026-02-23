@@ -136,6 +136,7 @@ class Lemur:
         self,
         train_subset_size: int = 8192,
         learn_subset_size: int = 100000,
+        test_subset_size: int = 32000,
         block_bytes: int | None = 256 * 1024 * 1024,
     ):
         num_train_docs = len(self.train_counts)
@@ -148,7 +149,7 @@ class Lemur:
 
         train_subset_ix = torch.randperm(num_train_docs)[:train_subset_size]
         if self.test is not None:
-            test_subset_ix = torch.randperm(len(self.test))[: min(len(self.test), 32000)]
+            test_subset_ix = torch.randperm(len(self.test))[: min(len(self.test), test_subset_size)]
 
         def pick(i):
             start = int(train_offsets[i].item())
