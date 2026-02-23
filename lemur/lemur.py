@@ -431,11 +431,26 @@ class Lemur:
                 outputs[start:end] = feature_extractor(data[start:end])
             return outputs
 
-    def _fit_corpus(
+    def compute_weights(
         self,
+        X: ArrayLike,
+        X_counts: ArrayLike,
         sample_size: int = 16384,
         verbose: bool = True,
-    ):
+    ) -> torch.Tensor:
+        matrix = self._to_tensor(X)
+        counts = self._to_tensor(X_counts, device=torch.device("cpu"))
+        if matrix.ndim != 2:
+            raise ValueError("X must be a 2D tensor.")
+        if matrix.dtype != torch.float32:
+            raise ValueError("X must have dtype float32.")
+        if counts.ndim != 1:
+            raise ValueError("X_counts must be a 1D tensor.")
+        if counts.dtype != torch.int32:
+            raise ValueError("X_counts must have dtype int32.")
+        if counts.sum(dtype=torch.int64).item() != matrix.shape[0]:
+            raise ValueError("sum(X_counts) must equal the number of rows in X.")
+
         sample_ix = torch.randperm(len(self.learn))[:sample_size]
         sampled = self.learn[sample_ix]
         Z = self._compute_features_batched(sampled)
@@ -443,14 +458,12 @@ class Lemur:
         device = Z.device
         sampled = sampled.to(device)
 
-        num_segments = len(self.train_counts)
+        num_segments = len(counts)
         W = torch.empty((num_segments, Z.shape[1]), device=device, dtype=torch.float32)
 
-        train_offsets = torch.empty(len(self.train_counts) + 1, dtype=torch.int64)
-        train_offsets[0] = 0
-        train_offsets[1:] = torch.cumsum(
-            self.train_counts.to(device="cpu", dtype=torch.int64), dim=0
-        )
+        offsets = torch.empty(num_segments + 1, dtype=torch.int64)
+        offsets[0] = 0
+        offsets[1:] = torch.cumsum(counts.to(device="cpu", dtype=torch.int64), dim=0)
         bytes_per_score = sampled.element_size()
         target_bytes = 16 * 1024 * 1024
         max_segments = target_bytes // (sampled.shape[0] * bytes_per_score)
@@ -473,16 +486,14 @@ class Lemur:
             with progress as pbar:
                 for seg_start in range(0, num_segments, max_segments):
                     seg_end = min(seg_start + max_segments, num_segments)
-                    row_start = int(train_offsets[seg_start].item())
-                    row_end = int(train_offsets[seg_end].item())
+                    row_start = int(offsets[seg_start].item())
+                    row_end = int(offsets[seg_end].item())
 
-                    train_slice = self.train[row_start:row_end]
-                    if device.type != "cpu":
-                        train_slice = train_slice.to(device, non_blocking=use_non_blocking)
-                    counts_slice = self.train_counts[seg_start:seg_end]
-                    Y_batch = (
-                        single_maxsim(train_slice, counts_slice, sampled) - self.mean
-                    ) / self.std
+                    matrix_slice = matrix[row_start:row_end]
+                    if matrix_slice.device != device:
+                        matrix_slice = matrix_slice.to(device, non_blocking=use_non_blocking)
+                    counts_slice = counts[seg_start:seg_end]
+                    Y_batch = (single_maxsim(matrix_slice, counts_slice, sampled) - self.mean) / self.std
 
                     UtY = U_t @ Y_batch
                     scaled = scales[:, None] * UtY
@@ -490,7 +501,19 @@ class Lemur:
                     if pbar is not None:
                         pbar.update(seg_end - seg_start)
 
-        self.W = W
+        return W
+
+    def _fit_corpus(
+        self,
+        sample_size: int = 16384,
+        verbose: bool = True,
+    ):
+        self.W = self.compute_weights(
+            self.train,
+            self.train_counts,
+            sample_size=sample_size,
+            verbose=verbose,
+        )
         if self.index_path is not None:
             self.index_path.mkdir(parents=True, exist_ok=True)
             self.save_w()
