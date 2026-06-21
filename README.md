@@ -1,13 +1,6 @@
 # LEMUR: Learned Multi-Vector Retrieval
 
-Fast implementation of the method described in the paper [LEMUR: Learned Multi-Vector Retrieval](https://arxiv.org/pdf/2601.21853). LEMUR reduces multi-vector retrieval for late interaction models such as ColBERT into regular single-vector retrieval.
-
-## Requirements
-
-- AVX-512 compatible CPU (required for the C++ extension)
-- Python 3.11+
-
-For combining LEMUR with approximate nearest neighbor search, we recommend [pyglass](https://github.com/zilliztech/pyglass).
+Official implementation of the method described in the paper [LEMUR: Learned Multi-Vector Retrieval](https://arxiv.org/pdf/2601.21853) (ICML '26). LEMUR speeds up multi-vector similarity search for late interaction models such as ColBERT by learning a lightweight, corpus-specific reduction to single-vector similarity search. 
 
 ## Installation
 
@@ -15,6 +8,13 @@ From the repo root:
 
 ```bash
 pip install .
+```
+
+On macOS, it is recommended to use the Homebrew version of Clang as the compiler:
+
+```bash
+brew install llvm libomp
+CC=/opt/homebrew/opt/llvm/bin/clang CXX=/opt/homebrew/opt/llvm/bin/clang++ pip install .
 ```
 
 ## Example usage
@@ -29,7 +29,12 @@ from lemur.maxsim import MaxSim
 # train_counts: torch.tensor uint64, shape (num_corpus_documents, )
 # test: torch.tensor float32, shape (num_query_token_embeddings, dim)
 # test_counts: torch.tensor uint64, shape (num_query_documents, )
-# train_counts is an array containing the number of token embeddings for each corpus document
+# train_counts/test_counts: array containing the number of token embeddings for each document
+
+# Optional:
+# Pass learn/learn_counts to fit() to improve performance by using a sample from the query
+# distribution as a training set. Ideally, learn should contain at least 100 000 rows
+# (token embeddings) and can also be e.g. the corpus documents encoded using the query encoder.
 
 lemur = Lemur(index="lemur_index", device="cpu")  # or "cuda" or "mps"
 lemur.fit(
@@ -42,7 +47,7 @@ lemur.fit(
 # Set epochs = 0 to skip training the MLP
 # This still works well but usually requires 2-4x more candidates to rerank
 
-# 1) Compute features
+# 1) Compute features for test queries
 feats = lemur.compute_features((test, test_counts))
 
 # 2) Compute approximate maxsim scores for all corpus documents and select k' candidates
@@ -51,11 +56,11 @@ k_candidates = 200
 topk = torch.topk(scores, k_candidates, dim=1)
 cand = topk.indices
 
-# If the number of corpus documents is large (e.g. > 100 000), it is recommended to instead
+# If the number of corpus documents is large (e.g. > 1 000 000), it is recommended to instead
 # index the rows of lemur.W using an approximate nearest neighbor search library that supports
 # maximum inner product search. The index can be queried using feats.
 
-# 3) Rerank with MaxSim
+# 3) Rerank with MaxSim (note that this is done on CPU even if the index is built on GPU)
 cand_np = np.ascontiguousarray(cand.cpu().numpy().astype(np.int32))
 
 ms = MaxSim(train, train_counts)
@@ -69,7 +74,7 @@ reranked = ms.rerank_subset(
 
 print(reranked)
 
-# Compute weights for new points
+# Compute weights for new corpus documents
 new_W = lemur.compute_weights(new_docs, new_docs_counts)
 ```
 
