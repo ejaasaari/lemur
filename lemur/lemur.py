@@ -533,7 +533,7 @@ class Lemur:
                 counts_tensor = self._to_tensor(queries_counts)
                 if counts_tensor.ndim != 1:
                     raise ValueError("queries_counts must be a 1D array or tensor")
-                counts_tensor = counts_tensor.to(device="cpu", dtype=torch.int64)
+                counts_tensor = counts_tensor.to(device=feats.device, dtype=torch.int64)
                 Q = torch.segment_reduce(
                     feats,
                     "sum",
