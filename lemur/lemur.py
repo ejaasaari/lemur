@@ -519,6 +519,73 @@ class Lemur:
             self.save_w()
         return self.W
 
+    def fit_diagonal_transform(
+        self, weights: Optional[ArrayLike] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if weights is None:
+            if not hasattr(self, "W"):
+                raise ValueError("W is not set; fit the corpus or load W first")
+            weights = self.W
+        weights = self._transform_matrix(weights, "weights")
+        if weights.shape[0] == 0:
+            raise ValueError("weights must contain at least one document")
+        if not torch.isfinite(weights).all():
+            raise ValueError("weights must contain only finite values")
+        variance, mean = torch.var_mean(weights, dim=0, unbiased=False)
+        scale = variance.sqrt()
+        scale = torch.where(scale > 0, scale, torch.ones_like(scale))
+        return mean, scale
+
+    def _transform_matrix(self, value: ArrayLike, name: str) -> torch.Tensor:
+        matrix = self._to_tensor(value)
+        if matrix.ndim != 2 or matrix.shape[1] == 0:
+            raise ValueError(f"{name} must be a 2D matrix with at least one coordinate")
+        if not matrix.is_floating_point():
+            raise ValueError(f"{name} must have a floating-point dtype")
+        return matrix
+
+    def _transform_parameter(
+        self, value: ArrayLike, matrix: torch.Tensor, name: str,
+    ) -> torch.Tensor:
+        parameter = self._to_tensor(value, device=matrix.device, dtype=matrix.dtype)
+        if parameter.shape != (matrix.shape[1],):
+            raise ValueError(f"{name} must have shape ({matrix.shape[1]},)")
+        if not torch.isfinite(parameter).all():
+            raise ValueError(f"{name} must contain only finite values")
+        if name == "scale" and torch.any(parameter <= 0):
+            raise ValueError("scale must be strictly positive")
+        return parameter
+
+    def transform_weights(
+        self,
+        weights: Optional[ArrayLike] = None,
+        mean: Optional[ArrayLike] = None,
+        scale: Optional[ArrayLike] = None,
+        *,
+        inplace: bool = False,
+    ) -> torch.Tensor:
+        if mean is None or scale is None:
+            raise ValueError("mean and scale are required")
+        if weights is None:
+            if not hasattr(self, "W"):
+                raise ValueError("W is not set; fit the corpus or load W first")
+            weights = self.W
+        weights = self._transform_matrix(weights, "weights")
+        mean = self._transform_parameter(mean, weights, "mean")
+        scale = self._transform_parameter(scale, weights, "scale")
+        if inplace:
+            # Parameters may be views into weights; preserve them before mutation.
+            mean, scale = mean.clone(), scale.clone()
+            with torch.inference_mode():
+                weights.sub_(mean).div_(scale)
+            return weights
+        return (weights - mean) / scale
+
+    def transform_features(self, features: ArrayLike, scale: ArrayLike) -> torch.Tensor:
+        features = self._transform_matrix(features, "features")
+        scale = self._transform_parameter(scale, features, "scale")
+        return features * scale
+
     def compute_features(self, X):
         device = self.device
 

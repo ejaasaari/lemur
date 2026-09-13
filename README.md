@@ -90,6 +90,16 @@ print(reranked)
 new_W = lemur.compute_weights(new_docs, new_docs_counts)
 ```
 
+Some single-vector search methods, especially clustering-based methods, may suffer from poor recall with LEMUR vectors. In that case, try applying centering + diagonal standardization to the weights and queries:
+
+```python
+mean, scale = lemur.fit_diagonal_transform()
+lemur.transform_weights(mean=mean, scale=scale, inplace=True)
+feats_transformed = lemur.transform_features(feats, scale)
+```
+
+This preserves the inner products up to a constant offset.
+
 ## Citation
 
 If you use the library in an academic context, please consider citing the following paper:
