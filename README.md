@@ -104,7 +104,7 @@ This preserves the inner products up to a constant offset.
 
 If you use the library in an academic context, please consider citing the following paper:
 
-> Jääsaari, E., Hyvönen, V., & Roos, T. (2026). LEMUR: Learned Multi-Vector Retrieval. In Proceedings of the 43rd International Conference on Machine Learning (Proceedings of Machine Learning Research), Vol. 306.
+> Jääsaari, E., Hyvönen, V., & Roos, T. (2026). LEMUR: Learned Multi-Vector Retrieval. In Proceedings of the 43rd International Conference on Machine Learning (Proceedings of Machine Learning Research), Vol. 306, pp. 50309–50330.
 
 ```
 @inproceedings{jaasaari2026lemur,
@@ -112,6 +112,7 @@ If you use the library in an academic context, please consider citing the follow
   author={J{\"a}{\"a}saari, Elias and Hyv{\"o}nen, Ville and Roos, Teemu},
   booktitle={Proceedings of the 43rd International Conference on Machine Learning},
   volume={306},
+  pages={50309--50330},
   series={Proceedings of Machine Learning Research},
   year={2026}
 }

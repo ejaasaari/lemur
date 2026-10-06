@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+message: "If you use LEMUR, please cite the paper listed below."
+type: software
+title: "LEMUR: Learned Multi-Vector Retrieval"
+authors:
+  - family-names: Jääsaari
+    given-names: Elias
+  - family-names: Hyvönen
+    given-names: Ville
+  - family-names: Roos
+    given-names: Teemu
+repository-code: "https://github.com/ejaasaari/lemur"
+license: MIT
+preferred-citation:
+  type: conference-paper
+  title: "LEMUR: Learned Multi-Vector Retrieval"
+  authors:
+    - family-names: Jääsaari
+      given-names: Elias
+    - family-names: Hyvönen
+      given-names: Ville
+    - family-names: Roos
+      given-names: Teemu
+  collection-title: "Proceedings of the 43rd International Conference on Machine Learning"
+  collection-type: proceedings
+  journal: "Proceedings of Machine Learning Research"
+  volume: 306
+  start: 50309
+  end: 50330
+  year: 2026
+  publisher:
+    name: PMLR
+  url: "https://proceedings.mlr.press/v306/jaasaari26a.html"
